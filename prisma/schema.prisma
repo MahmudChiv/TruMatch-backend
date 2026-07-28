@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                  String            @id @default(uuid())
+  githubId            String            @unique
+  username            String            @unique
+  email               String?
+  name                String?
+  avatarUrl           String?
+  bio                 String?
+  commitmentScore     Float             @default(0)
+  githubAccessToken   String?           // AES-256-GCM encrypted
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  githubMetrics       GithubMetrics?
+  interviewSession    InterviewSession?
+  commitmentScore_rel CommitmentScore?
+
+  @@map("users")
+}
+
+model GithubMetrics {
+  id                     String   @id @default(uuid())
+  userId                 String   @unique
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status                 String   @default("pending")  // pending | processing | complete | failed
+  githubConsistencyScore Float?
+  repoBreakdown          Json?
+  errorReason            String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@map("github_metrics")
+}
+
+model InterviewSession {
+  id               String   @id @default(uuid())
+  userId           String   @unique           // one active session per user at a time
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status           String   @default("in_progress") // in_progress | complete | failed
+  transcriptJson   Json     @default("[]")    // TranscriptEntry[]
+  structuredOutput Json?                      // InterviewAnalysis on completion
+  errorReason      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("interview_sessions")
+}
+
+model CommitmentScore {
+  id                   String   @id @default(uuid())
+  userId               String   @unique
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  githubScore          Float                  // raw 0-100 from github_metrics
+  interviewScore       Float                  // specificity_score 0-100 from interview
+  commitmentScore      Float                  // weighted composite (70/30 default)
+  declaredHoursPerDay  Float?
+  flaggedDiscrepancies Json?                  // Array<{repo, issue, userExplanation}>
+  communicationNotes   String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("commitment_scores")
+}
