@@ -53,4 +53,54 @@ export class UsersService {
       data: { githubAccessToken: encryptedToken },
     });
   }
+
+  /**
+   * Aggregates all dashboard data for a user in a single DB round-trip.
+   * Each section is returned independently so the frontend can handle
+   * partial availability (e.g. interview not yet done).
+   */
+  async getDashboardData(userId: string) {
+    const [user, commitmentScore, githubMetrics, interviewSession] =
+      await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            githubId: true,
+            username: true,
+            email: true,
+            name: true,
+            avatarUrl: true,
+            bio: true,
+            commitmentScore: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
+        this.prisma.commitmentScore.findUnique({
+          where: { userId },
+        }),
+        this.prisma.githubMetrics.findUnique({
+          where: { userId },
+        }),
+        this.prisma.interviewSession.findUnique({
+          where: { userId },
+          select: {
+            id: true,
+            status: true,
+            structuredOutput: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
+      ]);
+
+    return {
+      user,
+      commitmentScore,
+      githubMetrics,
+      interviewSession,
+    };
+  }
 }
+

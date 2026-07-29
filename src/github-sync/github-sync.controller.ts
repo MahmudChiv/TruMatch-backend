@@ -1,12 +1,27 @@
 import { Controller, Post, Get, UseGuards, Req, HttpCode, HttpStatus } from '@nestjs/common';
 import type { Request } from 'express';
 import { GithubSyncService } from './github-sync.service';
+import { UsersService } from '../users/users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { User } from '@prisma/client';
 
 @Controller('users/me')
 export class GithubSyncController {
-  constructor(private readonly githubSyncService: GithubSyncService) {}
+  constructor(
+    private readonly githubSyncService: GithubSyncService,
+    private readonly usersService: UsersService,
+  ) {}
+
+  /**
+   * GET /users/me/dashboard
+   * Returns all dashboard data in a single aggregated response.
+   */
+  @Get('dashboard')
+  @UseGuards(JwtAuthGuard)
+  async getDashboard(@Req() req: Request) {
+    const user = req.user as User;
+    return this.usersService.getDashboardData(user.id);
+  }
 
   /**
    * POST /users/me/github-sync
@@ -37,3 +52,4 @@ export class GithubSyncController {
     };
   }
 }
+

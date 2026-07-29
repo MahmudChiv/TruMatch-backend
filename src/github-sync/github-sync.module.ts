@@ -7,11 +7,13 @@ import { GithubSyncProcessor } from './github-sync.processor';
 import { GithubSyncGateway } from './github-sync.gateway';
 import { GithubSyncController } from './github-sync.controller';
 import { PrismaModule } from '../prisma/prisma.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
     PrismaModule,
     ConfigModule,
+    UsersModule,
     BullModule.registerQueue({
       name: 'github-sync',
       defaultJobOptions: {
@@ -44,3 +46,4 @@ import { PrismaModule } from '../prisma/prisma.module';
   exports: [GithubSyncService],
 })
 export class GithubSyncModule {}
+
