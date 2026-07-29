@@ -241,6 +241,15 @@ export class GithubSyncService {
     });
   }
 
+  /**
+   * Retrieve the current status of a user's GitHub sync job.
+   */
+  async getSyncStatus(userId: string) {
+    return this.prisma.githubMetrics.findUnique({
+      where: { userId },
+    });
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Private — per-repo GraphQL fetch
   // ─────────────────────────────────────────────────────────────────────────

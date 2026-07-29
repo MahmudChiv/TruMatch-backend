@@ -21,7 +21,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   @Get('github')
   @UseGuards(GithubAuthGuard)
@@ -52,8 +52,8 @@ export class AuthController {
     // Also set httpOnly cookie
     res.cookie('trumatch_token', result.accessToken, {
       httpOnly: true,
-      secure: true,        // must be true for SameSite=None
-      sameSite: 'none',    // cross-origin: Vercel frontend → Render backend
+      secure: true,
+      sameSite: 'none',
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
       path: '/',
     });

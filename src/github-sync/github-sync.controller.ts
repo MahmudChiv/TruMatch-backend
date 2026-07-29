@@ -1,4 +1,4 @@
-import { Controller, Post, UseGuards, Req, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Get, UseGuards, Req, HttpCode, HttpStatus } from '@nestjs/common';
 import type { Request } from 'express';
 import { GithubSyncService } from './github-sync.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -19,5 +19,21 @@ export class GithubSyncController {
   async triggerSync(@Req() req: Request) {
     const user = req.user as User;
     return this.githubSyncService.enqueueSync(user.id);
+  }
+
+  /**
+   * GET /users/me/github-sync
+   * Checks the status of the GitHub sync job.
+   */
+  @Get('github-sync')
+  @UseGuards(JwtAuthGuard)
+  async getSyncStatus(@Req() req: Request) {
+    const user = req.user as User;
+    const metrics = await this.githubSyncService.getSyncStatus(user.id);
+    return {
+      status: metrics?.status ?? 'none',
+      error: metrics?.errorReason ?? null,
+      score: metrics?.githubConsistencyScore ?? null,
+    };
   }
 }
