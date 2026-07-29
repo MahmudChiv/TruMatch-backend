@@ -52,8 +52,8 @@ export class AuthController {
     // Also set httpOnly cookie
     res.cookie('trumatch_token', result.accessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: true,        // must be true for SameSite=None
+      sameSite: 'none',    // cross-origin: Vercel frontend → Render backend
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
       path: '/',
     });
@@ -70,7 +70,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(@Res({ passthrough: true }) res: Response) {
-    res.clearCookie('trumatch_token', { path: '/' });
+    res.clearCookie('trumatch_token', { path: '/', sameSite: 'none', secure: true });
     return { message: 'Logged out successfully' };
   }
 }
