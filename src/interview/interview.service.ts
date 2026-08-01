@@ -54,7 +54,7 @@ const LOW_CONFIDENCE_EXPANDED_QUESTIONS = [
  * Neutrally phrased — asks for context, not accusation.
  */
 const OLD_ACCOUNT_QUESTION_TEMPLATE =
-  'You\'ve had a GitHub account since {accountCreatedDate} — what have you mostly been building or working on since then, if not much shows here?';
+  'We checked both your public and private GitHub repositories, and there wasn\'t much activity since {accountCreatedDate} — can you tell us what you\'ve mostly been working on?';
 
 const GEMINI_MODEL = 'gemini-3.6-flash';
 
@@ -169,7 +169,7 @@ export class InterviewService {
   async startInterview(
     userId: string,
     onChunk: (chunk: string, sessionId: string) => void,
-    onComplete: (fullText: string, turnIndex: number, sessionId: string) => void,
+    onComplete: (fullText: string, turnIndex: number, sessionId: string, isFinished?: boolean) => void,
   ): Promise<{ sessionId: string; preInterviewWarning: string }> {
     // ── 1. Precondition: github_metrics must exist (complete OR insufficient_data) ──
     const metrics = await this.prisma.githubMetrics.findUnique({
@@ -216,7 +216,7 @@ export class InterviewService {
       [],            // empty history — first turn
       firstQuestion, // The AI asks this question to the user (we inject it)
       (chunk) => onChunk(chunk, session.id),
-      (fullText, turnIndex) => onComplete(fullText, turnIndex, session.id),
+      (fullText, turnIndex, isFinished) => onComplete(fullText, turnIndex, session.id, isFinished),
       0,             // turnIndex
     );
 
@@ -241,7 +241,7 @@ export class InterviewService {
     sessionId: string,
     userAnswer: string,
     onChunk: (chunk: string, sessionId: string) => void,
-    onComplete: (fullText: string, turnIndex: number, sessionId: string) => void,
+    onComplete: (fullText: string, turnIndex: number, sessionId: string, isFinished?: boolean) => void,
   ): Promise<boolean> {
     // ── 1. Load current session ───────────────────────────────────────────
     const session = await this.prisma.interviewSession.findUnique({
@@ -298,7 +298,7 @@ export class InterviewService {
 
       // Emit as if it streamed (send full text as one chunk, then complete)
       onChunk(fullResponse, sessionId);
-      onComplete(fullResponse, nextTurnIndex, sessionId);
+      onComplete(fullResponse, nextTurnIndex, sessionId, false);
       return true; // interview continues
     } else {
       // All scripted questions answered — let Gemini generate a follow-up or signal completion
@@ -309,7 +309,7 @@ export class InterviewService {
         updatedTranscript,
         null, // no injected question — let Gemini decide
         (chunk) => onChunk(chunk, sessionId),
-        (fullText, turnIndex) => onComplete(fullText, turnIndex, sessionId),
+        (fullText, turnIndex, isFinished) => onComplete(fullText, turnIndex, sessionId, isFinished),
         nextTurnIndex,
       );
 
@@ -569,14 +569,14 @@ export class InterviewService {
     currentTranscript: TranscriptEntry[],
     injectedQuestion: string | null,
     onChunk: (chunk: string) => void,
-    onComplete: (fullText: string, turnIndex: number) => void,
+    onComplete: (fullText: string, turnIndex: number, isFinished?: boolean) => void,
     turnIndex: number,
   ): Promise<string> {
     // ── Baseline injected question path ────────────────────────────────────
     if (injectedQuestion) {
       await this.appendToTranscript(sessionId, 'assistant', injectedQuestion);
       onChunk(injectedQuestion);
-      onComplete(injectedQuestion, turnIndex);
+      onComplete(injectedQuestion, turnIndex, false);
       return injectedQuestion;
     }
 
@@ -609,25 +609,54 @@ export class InterviewService {
     const userMessage =
       'Continue the interview. Ask your next follow-up question based on the candidate responses so far. If you have gathered sufficient information across all areas (projects, completion, difficulty handling, communication, time commitment) and probed any GitHub discrepancies, respond with exactly [INTERVIEW_COMPLETE] followed by a brief closing statement.';
 
-    let fullText = '';
+    let rawFullText = '';
 
     try {
       const result = await chat.sendMessageStream(userMessage);
 
       for await (const chunk of result.stream) {
+        const candidate = chunk.candidates?.[0];
+        if (candidate?.finishReason === 'SAFETY') {
+          this.logger.warn(`[SAFETY_TRIGGERED] session=${sessionId}, turn=${turnIndex}, reason=finishReason:SAFETY`);
+          const safetyFallback = "Let's keep this focused on the project — could you rephrase that?";
+          await this.appendToTranscript(sessionId, 'assistant', safetyFallback);
+          onChunk(safetyFallback);
+          onComplete(safetyFallback, turnIndex, false);
+          return safetyFallback;
+        }
+
         const chunkText = chunk.text();
         if (chunkText) {
-          fullText += chunkText;
-          onChunk(chunkText);
+          rawFullText += chunkText;
+          // Strip [INTERVIEW_COMPLETE] from chunk before streaming to client
+          const cleanedChunk = chunkText.replace(/\[INTERVIEW_COMPLETE\]/g, '');
+          if (cleanedChunk) {
+            onChunk(cleanedChunk);
+          }
         }
       }
     } catch (err) {
-      throw new Error(`Gemini streaming failed: ${(err as Error).message}`);
+      const errorMsg = (err as Error).message || '';
+      if (errorMsg.includes('SAFETY') || errorMsg.includes('blocked') || errorMsg.includes('candidate')) {
+        this.logger.warn(`[SAFETY_TRIGGERED] session=${sessionId}, turn=${turnIndex}, reason=${errorMsg}`);
+        const safetyFallback = "Let's keep this focused on the project — could you rephrase that?";
+        await this.appendToTranscript(sessionId, 'assistant', safetyFallback);
+        onChunk(safetyFallback);
+        onComplete(safetyFallback, turnIndex, false);
+        return safetyFallback;
+      }
+      throw new Error(`Gemini streaming failed: ${errorMsg}`);
     }
 
-    await this.appendToTranscript(sessionId, 'assistant', fullText);
-    onComplete(fullText, turnIndex);
-    return fullText;
+    const isFinished = rawFullText.includes('[INTERVIEW_COMPLETE]');
+    let cleanText = rawFullText.replace(/\[INTERVIEW_COMPLETE\]/g, '').trim();
+    if (!cleanText && isFinished) {
+      cleanText = "Thank you for sharing your experience! That completes all our questions.";
+    }
+
+    await this.appendToTranscript(sessionId, 'assistant', cleanText);
+    onComplete(cleanText, turnIndex, isFinished);
+    return cleanText;
   }
 
   // ── Private: structured analysis via Gemini responseSchema ───────────────
@@ -761,9 +790,9 @@ The explanation should:
     const repoSummary = repos
       .map(
         (r) =>
-          `  - ${r.name}: commit consistency ${(r.commitGapConsistency * 100).toFixed(0)}%, ` +
-          `PR merge rate ${(r.prMergeRatio * 100).toFixed(0)}%, ` +
-          `issue close rate ${(r.issueCloseRatio * 100).toFixed(0)}%, ` +
+          `  - ${r.name} (${r.isCollaborative ? 'collaborative' : 'solo'}): commit consistency ${(r.commitGapConsistency * 100).toFixed(0)}%, ` +
+          `PR merge rate ${r.prMergeRatio !== null ? (r.prMergeRatio * 100).toFixed(0) + '%' : 'N/A (0 PRs)'}, ` +
+          `issue close rate ${r.issueCloseRatio !== null ? (r.issueCloseRatio * 100).toFixed(0) + '%' : 'N/A (0 issues)'}, ` +
           `completion signal ${(r.completionSignal * 100).toFixed(0)}%, ` +
           `repo score ${r.repoScore}/100`,
       )
@@ -813,6 +842,7 @@ RULES:
 - When you have covered all baseline areas and any significant discrepancies, emit [INTERVIEW_COMPLETE] to signal the interview is done.
 - For low-confidence users, ask one light, conversational technical-reasoning question scoped to their claimed stack (not a formal coding test).
 - For users with an immediate specific follow-up opportunity (they named a project), ask about the language/framework used and the actual blocker that took longest to solve.
+- IMPORTANT: GitHub sync scans BOTH public AND private repositories (via GitHub OAuth repo scope). Do NOT accept "my work is in private repos" or "I work in private repositories" as a sufficient resolving explanation on its own. If the candidate offers this, remind them neutrally that private repos were already included in the scan, and ask a direct, specific follow-up (e.g. what specific projects or tech stacks they worked on, or if their work was under a different GitHub account or enterprise organization).
 
 ${confidenceContext}
 

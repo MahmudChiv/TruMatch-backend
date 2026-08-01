@@ -85,11 +85,12 @@ export class InterviewGateway
           const event: InterviewChunkEvent = { sessionId: sId, chunk };
           this.server.to(room).emit('interview:chunk', event);
         },
-        (fullText, turnIndex, sId) => {
+        (fullText, turnIndex, sId, isFinished) => {
           const event: InterviewMessageCompleteEvent = {
             sessionId: sId,
             fullText,
             turnIndex,
+            isInterviewFinished: isFinished,
           };
           this.server.to(room).emit('interview:message-complete', event);
         },
@@ -111,7 +112,8 @@ export class InterviewGateway
   /**
    * Client emits 'interview:answer' with the user's response to the last question.
    * Server appends to transcript, persists, then streams the next question.
-   * When the interview is complete (server-driven), calls finaliseInterview().
+   * When Gemini finishes the questions, emits isInterviewFinished in message-complete.
+   * Finalisation occurs when client manually emits 'interview:finish'.
    */
   @SubscribeMessage('interview:answer')
   async handleAnswer(
@@ -124,7 +126,7 @@ export class InterviewGateway
     this.logger.log(`interview:answer received — session ${sessionId}`);
 
     try {
-      const shouldContinue = await this.interviewService.continueInterview(
+      await this.interviewService.continueInterview(
         userId,
         sessionId,
         answer,
@@ -132,35 +134,16 @@ export class InterviewGateway
           const event: InterviewChunkEvent = { sessionId: sId, chunk };
           this.server.to(room).emit('interview:chunk', event);
         },
-        (fullText, turnIndex, sId) => {
+        (fullText, turnIndex, sId, isFinished) => {
           const event: InterviewMessageCompleteEvent = {
             sessionId: sId,
             fullText,
             turnIndex,
+            isInterviewFinished: isFinished,
           };
           this.server.to(room).emit('interview:message-complete', event);
         },
       );
-
-      if (!shouldContinue) {
-        // Gemini signalled completion — run finalisation
-        this.logger.log(`Interview ${sessionId} complete — running finalisation`);
-        await this.interviewService.finaliseInterview(
-          userId,
-          sessionId,
-          (payload) => {
-            const event: InterviewCompleteEvent = {
-              sessionId,
-              ...payload,
-            };
-            this.server.to(room).emit('interview:complete', event);
-          },
-          (reason) => {
-            const event: InterviewErrorEvent = { sessionId, reason };
-            this.server.to(room).emit('interview:error', event);
-          },
-        );
-      }
     } catch (err) {
       const reason = (err as Error).message;
       this.logger.error(`interview:answer failed — session ${sessionId}: ${reason}`);

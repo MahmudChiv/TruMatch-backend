@@ -41,6 +41,7 @@ export interface InterviewMessageCompleteEvent {
   sessionId: string;
   fullText: string;
   turnIndex: number;
+  isInterviewFinished?: boolean;
 }
 
 /** Interview is fully complete — commitment score is ready */

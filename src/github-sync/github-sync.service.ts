@@ -37,6 +37,13 @@ const REPO_SIGNALS_QUERY = `
             history(first: 100) {
               nodes {
                 committedDate
+                author {
+                  user {
+                    login
+                  }
+                  name
+                  email
+                }
               }
             }
           }
@@ -58,12 +65,21 @@ const REPO_SIGNALS_QUERY = `
 `;
 
 // ─── GraphQL response types ─────────────────────────────────────────────────
+interface CommitNode {
+  committedDate: string;
+  author?: {
+    user?: { login: string } | null;
+    name?: string | null;
+    email?: string | null;
+  } | null;
+}
+
 interface RepoGraphQLData {
   repository: {
     defaultBranchRef: {
       target: {
         history: {
-          nodes: Array<{ committedDate: string }>;
+          nodes: CommitNode[];
         };
       };
     } | null;
@@ -84,9 +100,10 @@ export interface RepoSignals {
   name: string;
   fullName: string;
   commitGapConsistency: number; // 0-1, higher = more consistent cadence
-  prMergeRatio: number;         // 0-1
-  issueCloseRatio: number;      // 0-1
+  prMergeRatio: number | null;  // 0-1, null if 0 PRs (not applicable)
+  issueCloseRatio: number | null; // 0-1, null if 0 issues (not applicable)
   completionSignal: number;     // 0-1, higher = completed vs abandoned
+  isCollaborative: boolean;     // true if > 1 distinct commit author
   repoScore: number;            // weighted composite 0-100
   totalCommits: number;         // raw commit count for confidence calculation
 }
@@ -357,18 +374,38 @@ export class GithubSyncService {
       const commits = defaultBranchRef?.target?.history?.nodes ?? [];
       if (commits.length < MIN_COMMITS) return null;
 
+      // Detect solo vs collaborative repo (distinct commit author count)
+      const authorSet = new Set<string>();
+      for (const c of commits) {
+        const id = c.author?.user?.login || c.author?.email || c.author?.name;
+        if (id) authorSet.add(id.toLowerCase());
+      }
+      const isCollaborative = authorSet.size > 1;
+
       // Compute signals
-      // Note: GraphQL states are UPPERCASE (OPEN/CLOSED/MERGED) unlike REST (lowercase)
+      // PR and Issue signals are positive-only (optional). Absence (0 PRs / 0 issues) is treated as not_applicable (null)
+      // rather than a 0/100 or default 0.5 penalty.
       const commitGapConsistency = this.computeCommitGapConsistency(commits);
       const prMergeRatio = this.computePrMergeRatio(pullRequests.nodes);
       const issueCloseRatio = this.computeIssueCloseRatio(issues.nodes);
       const completionSignal = this.computeCompletionSignal(commits);
 
-      const repoScore =
-        (commitGapConsistency * 0.35 +
-          prMergeRatio * 0.25 +
-          issueCloseRatio * 0.2 +
-          completionSignal * 0.2) * 100;
+      // Baseline signals always apply: commitGapConsistency (0.35) and completionSignal (0.20)
+      let weightedSum = commitGapConsistency * 0.35 + completionSignal * 0.20;
+      let totalActiveWeight = 0.35 + 0.20;
+
+      if (prMergeRatio !== null) {
+        weightedSum += prMergeRatio * 0.25;
+        totalActiveWeight += 0.25;
+      }
+
+      if (issueCloseRatio !== null) {
+        weightedSum += issueCloseRatio * 0.20;
+        totalActiveWeight += 0.20;
+      }
+
+      // Renormalize aggregate score over active signals only
+      const repoScore = (weightedSum / totalActiveWeight) * 100;
 
       return {
         name: repoName,
@@ -377,6 +414,7 @@ export class GithubSyncService {
         prMergeRatio,
         issueCloseRatio,
         completionSignal,
+        isCollaborative,
         repoScore: Math.round(repoScore * 100) / 100,
         totalCommits: commits.length,
       };
@@ -420,23 +458,22 @@ export class GithubSyncService {
 
   /**
    * PR merge ratio.
-   * GraphQL state is 'MERGED' (not merged_at presence check).
+   * Returns null if 0 PRs were opened (not applicable — positive-only signal).
    */
   private computePrMergeRatio(
     prs: Array<{ state: string; mergedAt?: string | null }>,
-  ): number {
-    if (prs.length === 0) return 0.5;
+  ): number | null {
+    if (prs.length === 0) return null;
     const merged = prs.filter((p) => p.state === 'MERGED').length;
     return merged / prs.length;
   }
 
   /**
    * Issue close ratio.
-   * GraphQL state is 'CLOSED' (uppercase) — no pull_request field needed since
-   * GitHub GraphQL issues and pullRequests are separate connections.
+   * Returns null if 0 issues were opened (not applicable — positive-only signal).
    */
-  private computeIssueCloseRatio(issues: Array<{ state: string }>): number {
-    if (issues.length === 0) return 0.5;
+  private computeIssueCloseRatio(issues: Array<{ state: string }>): number | null {
+    if (issues.length === 0) return null;
     const closed = issues.filter((i) => i.state === 'CLOSED').length;
     return closed / issues.length;
   }
