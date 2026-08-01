@@ -10,6 +10,10 @@ import { graphql } from '@octokit/graphql';
 import { Redis } from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import { decryptToken } from './crypto.util';
+import {
+  MIN_REPOS_HIGH_CONFIDENCE,
+  MIN_COMMITS_HIGH_CONFIDENCE,
+} from '../interview/config/scoring.config';
 
 const REDIS_METRICS_TTL = 60 * 60;   // 1 hour in seconds
 const MAX_REPOS = 10;                  // cap: 10 most-recently-active qualifying repos
@@ -84,11 +88,14 @@ export interface RepoSignals {
   issueCloseRatio: number;      // 0-1
   completionSignal: number;     // 0-1, higher = completed vs abandoned
   repoScore: number;            // weighted composite 0-100
+  totalCommits: number;         // raw commit count for confidence calculation
 }
 
 export interface GithubSyncResult {
-  githubConsistencyScore: number;
+  githubConsistencyScore: number | null;
   repoBreakdown: RepoSignals[];
+  githubConfidence: 'high' | 'low' | 'insufficient';
+  accountCreatedAt: string | null;
 }
 
 // ─── Service ────────────────────────────────────────────────────────────────
@@ -130,6 +137,11 @@ export class GithubSyncService {
   /**
    * Full GitHub data-fetch + scoring pipeline.
    * Called by the BullMQ processor — runs in the background worker.
+   *
+   * Now includes:
+   * - GitHub account creation date fetch
+   * - Confidence tier computation (high / low / insufficient)
+   * - Graceful handling of insufficient data (no throw)
    */
   async processSyncJob(userId: string): Promise<GithubSyncResult> {
     console.log('🔥 [SERVICE] processSyncJob() called for user:', userId);
@@ -166,7 +178,17 @@ export class GithubSyncService {
       request: { timeout: REQUEST_TIMEOUT_MS },
     }) as unknown as GraphqlClient;
 
-    // ── 1. Fetch repo list via REST (single paginate — repos are lightweight) ─
+    // ── 1. Fetch GitHub account creation date (one extra API call) ─────────
+    let accountCreatedAt: string | null = null;
+    try {
+      const { data: authUser } = await octokit.users.getAuthenticated();
+      accountCreatedAt = authUser.created_at || null;
+    } catch (err) {
+      this.logger.warn(`Failed to fetch GitHub account age for user ${userId}: ${(err as Error).message}`);
+      // Non-fatal — continue without account age
+    }
+
+    // ── 2. Fetch repo list via REST (single paginate — repos are lightweight) ─
     const allRepos = await octokit.paginate(octokit.repos.listForAuthenticatedUser, {
       affiliation: 'owner',
       sort: 'updated',
@@ -176,16 +198,14 @@ export class GithubSyncService {
 
     this.logger.log(`Fetched ${allRepos.length} total repos for user ${userId}`);
 
-    // ── 2. Filter forks + tiny scaffolds, cap to 10 ─────────────────────────
+    // ── 3. Filter forks + tiny scaffolds, cap to 10 ─────────────────────────
     const repos = allRepos
       .filter((r) => !r.fork && (r.size ?? 0) >= MIN_REPO_SIZE_KB)
       .slice(0, MAX_REPOS);
 
     this.logger.log(`${repos.length} repos after filtering for user ${userId}`);
 
-    // ── 3. Per-repo GraphQL fetch — p-limit(5) concurrency ──────────────────
-    // Each GraphQL call fetches commits + PRs + issues in ONE round trip.
-    // This replaces 3 sequential REST paginate() calls per repo.
+    // ── 4. Per-repo GraphQL fetch — p-limit(5) concurrency ──────────────────
     const { default: pLimit } = await import('p-limit');
     const limit = pLimit(PER_REPO_CONCURRENCY);
 
@@ -199,31 +219,91 @@ export class GithubSyncService {
       (s): s is RepoSignals => s !== null,
     );
 
-    if (repoSignals.length === 0) {
-      throw new Error('No qualifying repositories found after filtering');
+    // ── 5. Compute confidence tier + aggregate score ────────────────────────
+    // Wrapped in try-catch: if confidence computation fails for any reason,
+    // default to 'insufficient' (safer than assuming high confidence)
+    let githubConfidence: 'high' | 'low' | 'insufficient' = 'insufficient';
+    let githubConsistencyScore: number | null = null;
+    let qualifyingRepoCount = 0;
+    let totalCommitCount = 0;
+    let syncStatus = 'complete';
+
+    try {
+      qualifyingRepoCount = repoSignals.length;
+      totalCommitCount = repoSignals.reduce((sum, s) => sum + s.totalCommits, 0);
+
+      if (qualifyingRepoCount === 0) {
+        // Insufficient: zero qualifying repos
+        // Store as 'insufficient_data' — never render as a numeric score of 0
+        githubConfidence = 'insufficient';
+        syncStatus = 'insufficient_data';
+        githubConsistencyScore = null;
+      } else {
+        // Check thresholds for high vs low confidence
+        if (
+          qualifyingRepoCount >= MIN_REPOS_HIGH_CONFIDENCE &&
+          totalCommitCount >= MIN_COMMITS_HIGH_CONFIDENCE
+        ) {
+          githubConfidence = 'high';
+        } else {
+          githubConfidence = 'low';
+        }
+        githubConsistencyScore = this.aggregateScore(repoSignals);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Failed to compute confidence for ${userId}, defaulting to insufficient: ${(err as Error).message}`,
+      );
+      githubConfidence = 'insufficient';
+      syncStatus = 'insufficient_data';
+      githubConsistencyScore = null;
     }
 
-    // ── 4. Aggregate ─────────────────────────────────────────────────────────
-    const githubConsistencyScore = this.aggregateScore(repoSignals);
-    const result: GithubSyncResult = { githubConsistencyScore, repoBreakdown: repoSignals };
+    const result: GithubSyncResult = {
+      githubConsistencyScore,
+      repoBreakdown: repoSignals,
+      githubConfidence,
+      accountCreatedAt,
+    };
 
-    // ── 5. Persist ───────────────────────────────────────────────────────────
+    // ── 6. Persist ───────────────────────────────────────────────────────────
     await this.prisma.githubMetrics.upsert({
       where: { userId },
-      create: { userId, status: 'complete', githubConsistencyScore, repoBreakdown: repoSignals as any },
-      update: { status: 'complete', githubConsistencyScore, repoBreakdown: repoSignals as any, errorReason: null },
+      create: {
+        userId,
+        status: syncStatus,
+        githubConsistencyScore,
+        repoBreakdown: repoSignals as any,
+        githubConfidence,
+        accountCreatedAt: accountCreatedAt ? new Date(accountCreatedAt) : null,
+        qualifyingRepoCount,
+        totalCommitCount,
+      },
+      update: {
+        status: syncStatus,
+        githubConsistencyScore,
+        repoBreakdown: repoSignals as any,
+        errorReason: null,
+        githubConfidence,
+        accountCreatedAt: accountCreatedAt ? new Date(accountCreatedAt) : null,
+        qualifyingRepoCount,
+        totalCommitCount,
+      },
     });
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { commitmentScore: githubConsistencyScore },
-    });
+    // Only update denormalised score if we have one (don't overwrite with 0 for insufficient)
+    if (githubConsistencyScore !== null) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { commitmentScore: githubConsistencyScore },
+      });
+    }
 
-    // ── 6. Cache in Redis ─────────────────────────────────────────────────────
+    // ── 7. Cache in Redis ─────────────────────────────────────────────────────
     await this.redis.setex(`github_metrics:${userId}`, REDIS_METRICS_TTL, JSON.stringify(result));
 
     this.logger.log(
-      `GitHub sync complete for user ${userId} — score: ${githubConsistencyScore.toFixed(2)}`,
+      `GitHub sync complete for user ${userId} — score: ${githubConsistencyScore?.toFixed(2) ?? 'N/A'}, confidence: ${githubConfidence}`,
     );
 
     return result;
@@ -257,6 +337,7 @@ export class GithubSyncService {
   /**
    * ONE GraphQL request per repo fetches commits, PRs, and issues simultaneously.
    * Replaces 3 sequential paginate() calls — order-of-magnitude faster per repo.
+   * Now also returns totalCommits for confidence calculation.
    */
   private async fetchRepoSignalsViaGraphQL(
     graphqlWithAuth: GraphqlClient,
@@ -297,6 +378,7 @@ export class GithubSyncService {
         issueCloseRatio,
         completionSignal,
         repoScore: Math.round(repoScore * 100) / 100,
+        totalCommits: commits.length,
       };
     } catch (err) {
       this.logger.warn(`Skipping repo ${repo.full_name}: ${(err as Error).message}`);

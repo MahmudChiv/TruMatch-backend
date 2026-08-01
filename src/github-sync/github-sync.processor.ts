@@ -29,9 +29,12 @@ export class GithubSyncProcessor extends WorkerHost {
       const result = await this.githubSyncService.processSyncJob(userId);
 
       // Notify the frontend via WebSocket
+      // Now includes githubConfidence and accountCreatedAt
       this.gateway.emitSyncComplete(userId, {
-        status: 'complete',
-        score: result.githubConsistencyScore,
+        status: result.githubConsistencyScore !== null ? 'complete' : 'insufficient_data',
+        score: result.githubConsistencyScore ?? undefined,
+        githubConfidence: result.githubConfidence,
+        accountCreatedAt: result.accountCreatedAt ?? undefined,
       });
     } catch (err) {
       const reason = (err as Error).message ?? 'Unknown error';

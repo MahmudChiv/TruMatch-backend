@@ -2,6 +2,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
+enum GithubConfidence {
+  high
+  low
+  insufficient
+}
+
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
@@ -18,6 +24,7 @@ model User {
   bio                 String?
   commitmentScore     Float             @default(0)
   githubAccessToken   String?           // AES-256-GCM encrypted
+  contextNote         String?           // User-authored note shown on public profile, does NOT affect score
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
   githubMetrics       GithubMetrics?
@@ -28,15 +35,19 @@ model User {
 }
 
 model GithubMetrics {
-  id                     String   @id @default(uuid())
-  userId                 String   @unique
-  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  status                 String   @default("pending")  // pending | processing | complete | failed
+  id                     String            @id @default(uuid())
+  userId                 String            @unique
+  user                   User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status                 String            @default("pending")  // pending | processing | complete | insufficient_data | failed
   githubConsistencyScore Float?
   repoBreakdown          Json?
+  githubConfidence       GithubConfidence  @default(insufficient)  // high | low | insufficient
+  accountCreatedAt       DateTime?         // GitHub account creation date, fetched once during sync
+  qualifyingRepoCount    Int               @default(0)
+  totalCommitCount       Int               @default(0)
   errorReason            String?
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
 
   @@map("github_metrics")
 }
@@ -48,6 +59,7 @@ model InterviewSession {
   status           String   @default("in_progress") // in_progress | complete | failed
   transcriptJson   Json     @default("[]")    // TranscriptEntry[]
   structuredOutput Json?                      // InterviewAnalysis on completion
+  bioSummary       String?  // Populated from dedicated early interview question about the user's background
   errorReason      String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -56,17 +68,22 @@ model InterviewSession {
 }
 
 model CommitmentScore {
-  id                   String   @id @default(uuid())
-  userId               String   @unique
-  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  githubScore          Float                  // raw 0-100 from github_metrics
-  interviewScore       Float                  // specificity_score 0-100 from interview
-  commitmentScore      Float                  // weighted composite (70/30 default)
-  declaredHoursPerDay  Float?
-  flaggedDiscrepancies Json?                  // Array<{repo, issue, userExplanation}>
-  communicationNotes   String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                           String   @id @default(uuid())
+  userId                       String   @unique
+  user                         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  githubScore                  Float                  // raw 0-100 from github_metrics
+  interviewScore               Float                  // specificity_score 0-100 from interview
+  commitmentScore              Float                  // weighted composite (dynamic weights)
+  appliedGithubWeight          Float    @default(0.7) // actual weight used for this user (varies by confidence)
+  appliedInterviewWeight       Float    @default(0.3) // actual weight used for this user
+  declaredHoursPerDay          Float?
+  flaggedDiscrepancies         Json?                  // Array<{repo, issue, userExplanation}>
+  cappedDiscrepancyAdjustments Json?                  // Array<{repo, issue, originalWeight, reductionApplied, cappedAt}>
+  discrepancyResolutionPattern Float?                 // ratio: explained / flagged (0-1, null if no flags)
+  communicationNotes           String?
+  scoreExplanationSummary      String?                // AI-generated plain-language paragraph explaining the score
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
 
   @@map("commitment_scores")
 }

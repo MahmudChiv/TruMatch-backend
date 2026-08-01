@@ -1,3 +1,7 @@
+// ─── GitHub confidence tier ───────────────────────────────────────────────────
+
+export type GithubConfidenceTier = 'high' | 'low' | 'insufficient';
+
 // ─── WebSocket event payload shapes ──────────────────────────────────────────
 
 /** Client → Server: start the interview */
@@ -20,6 +24,12 @@ export interface InterviewCompletePayload {
 
 // ─── Server → Client events ───────────────────────────────────────────────────
 
+/** Returned in the acknowledgement of interview:start */
+export interface InterviewStartResponseEvent {
+  sessionId: string;
+  preInterviewWarning: string;
+}
+
 /** Streamed text chunk from Gemini */
 export interface InterviewChunkEvent {
   sessionId: string;
@@ -39,9 +49,15 @@ export interface InterviewCompleteEvent {
   commitmentScore: number;
   githubScore: number;
   interviewScore: number;
+  appliedGithubWeight: number;
+  appliedInterviewWeight: number;
   declaredHoursPerDay: number | null;
   flaggedDiscrepancies: FlaggedDiscrepancy[];
   communicationStyleNotes: string;
+  discrepancyResolutionPattern: number | null;
+  scoreExplanationSummary: string | null;
+  githubConfidence: GithubConfidenceTier;
+  preInterviewWarning: string;
 }
 
 /** An unrecoverable error occurred */
@@ -59,10 +75,22 @@ export interface FlaggedDiscrepancy {
 }
 
 /**
+ * Individual discrepancy explanation with capped reduction tracking.
+ * Used in the extended analysis to transparently record how much each
+ * explanation reduced its discrepancy's weight (never more than MAX_DISCREPANCY_REDUCTION).
+ */
+export interface DiscrepancyExplanation {
+  repo: string;
+  issue: string;
+  original_weight: number;      // weight this discrepancy would have had without explanation
+  explanation_quality: number;   // 0-1, how concrete/verifiable the explanation was (from Gemini)
+  reduction_applied: number;     // actual reduction applied (capped at MAX_DISCREPANCY_REDUCTION)
+}
+
+/**
  * The structured JSON output Gemini produces at the end of the interview.
  * Enforced via Gemini's responseSchema (controlled generation) — never free-text parsed.
- * Note: flagged_discrepancies items use snake_case (user_explanation) to match
- * what Gemini returns from the responseSchema.
+ * Note: uses snake_case to match what Gemini returns from the responseSchema.
  */
 export interface InterviewAnalysis {
   specificity_score: number;           // 0-100
@@ -73,6 +101,14 @@ export interface InterviewAnalysis {
     user_explanation: string;          // snake_case — matches Gemini responseSchema
   }>;
   communication_style_notes: string;
+  bio_summary: string;                 // User's self-described background from early interview question
+  discrepancy_explanations: Array<{
+    repo: string;
+    issue: string;
+    original_weight: number;
+    explanation_quality: number;        // 0-1, assessed by Gemini
+    reduction_applied: number;          // capped at MAX_DISCREPANCY_REDUCTION
+  }>;
 }
 
 // ─── Transcript entry ─────────────────────────────────────────────────────────

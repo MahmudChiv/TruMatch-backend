@@ -18,6 +18,7 @@ import type {
   InterviewMessageCompleteEvent,
   InterviewCompleteEvent,
   InterviewErrorEvent,
+  InterviewStartResponseEvent,
 } from './dto/interview-events.dto';
 
 @WebSocketGateway({
@@ -64,6 +65,8 @@ export class InterviewGateway
    * Client emits 'interview:start'.
    * Server validates preconditions, creates the session, and begins streaming
    * the first question.
+   *
+   * Now returns the pre-interview warning text in the acknowledgement.
    */
   @SubscribeMessage('interview:start')
   async handleStart(
@@ -76,7 +79,7 @@ export class InterviewGateway
     this.logger.log(`interview:start received for user ${userId}`);
 
     try {
-      const sessionId = await this.interviewService.startInterview(
+      const { sessionId, preInterviewWarning } = await this.interviewService.startInterview(
         userId,
         (chunk, sId) => {
           const event: InterviewChunkEvent = { sessionId: sId, chunk };
@@ -92,7 +95,11 @@ export class InterviewGateway
         },
       );
 
-      return { sessionId };
+      const response: InterviewStartResponseEvent = {
+        sessionId,
+        preInterviewWarning,
+      };
+      return response;
     } catch (err) {
       const reason = (err as Error).message;
       this.logger.error(`interview:start failed for user ${userId}: ${reason}`);
