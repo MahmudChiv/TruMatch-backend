@@ -25,11 +25,17 @@ model User {
   commitmentScore     Float             @default(0)
   githubAccessToken   String?           // AES-256-GCM encrypted
   contextNote         String?           // User-authored note shown on public profile, does NOT affect score
+  latitude            Float?            // City-level, for proximity-based hackathon discovery
+  longitude           Float?            // City-level, for proximity-based hackathon discovery
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
   githubMetrics       GithubMetrics?
   interviewSession    InterviewSession?
   commitmentScore_rel CommitmentScore?
+  submittedHackathons Hackathon[]       @relation("SubmittedHackathons")
+  hackathonVouches    HackathonVouch[]  @relation("HackathonVouches")
+  hackathonReports    HackathonReport[] @relation("HackathonReports")
+  hackathonJoins      HackathonJoin[]   @relation("HackathonJoins")
 
   @@map("users")
 }
@@ -87,3 +93,68 @@ model CommitmentScore {
 
   @@map("commitment_scores")
 }
+
+// ─── Hackathons ───────────────────────────────────────────────────────────────
+
+model Hackathon {
+  id                 String   @id @default(uuid())
+  title              String
+  logoUrl            String?
+  description        String?
+  startDate          DateTime?
+  endDate            DateTime?
+  submissionDeadline DateTime?
+  venueType          String   @default("virtual")  // physical | virtual | hybrid
+  locationLabel      String?                        // city-level label, e.g. "Lagos, Nigeria"
+  latitude           Float?                         // city-level precision
+  longitude          Float?                         // city-level precision
+  externalUrl        String                          // required — where real registration lives
+  prizeInfo          String?                        // display-only, NOT transactional
+  tags               String[] @default([])
+  status             String   @default("pending")   // pending | verified | flagged
+  submittedBy        String
+  submitter          User     @relation("SubmittedHackathons", fields: [submittedBy], references: [id])
+  trustScore         Float    @default(0)           // computed from vouches/reports
+  createdAt          DateTime @default(now())
+
+  vouches  HackathonVouch[]
+  reports  HackathonReport[]
+  joins    HackathonJoin[]
+
+  @@map("hackathons")
+}
+
+model HackathonVouch {
+  hackathonId String
+  hackathon   Hackathon @relation(fields: [hackathonId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation("HackathonVouches", fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@id([hackathonId, userId])
+  @@map("hackathon_vouches")
+}
+
+model HackathonReport {
+  hackathonId String
+  hackathon   Hackathon @relation(fields: [hackathonId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation("HackathonReports", fields: [userId], references: [id], onDelete: Cascade)
+  reason      String
+  createdAt   DateTime  @default(now())
+
+  @@id([hackathonId, userId])
+  @@map("hackathon_reports")
+}
+
+model HackathonJoin {
+  hackathonId String
+  hackathon   Hackathon @relation(fields: [hackathonId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation("HackathonJoins", fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt    DateTime  @default(now())
+
+  @@id([hackathonId, userId])
+  @@map("hackathon_joins")
+}
+

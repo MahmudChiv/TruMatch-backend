@@ -99,6 +99,17 @@ export class UsersService {
   }
 
   /**
+   * Update the user's location coordinates for proximity-based matching/discovery.
+   */
+  async updateLocation(userId: string, latitude: number, longitude: number) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { latitude, longitude },
+      select: { id: true, latitude: true, longitude: true, updatedAt: true },
+    });
+  }
+
+  /**
    * Update the user's editable profile fields.
    * contextNote: user-authored note shown on public profile — does NOT affect score.
    * bio: the user's GitHub-style bio (editable after onboarding).

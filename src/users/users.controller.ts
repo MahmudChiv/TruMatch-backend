@@ -21,6 +21,11 @@ class UpdateProfileBody {
   bio?: string | null;
 }
 
+class UpdateLocationBody {
+  latitude: number;
+  longitude: number;
+}
+
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
@@ -46,6 +51,17 @@ export class UsersController {
   ) {
     const user = req.user as User;
     return this.usersService.updateProfile(user.id, body);
+  }
+
+  @Patch('me/location')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async updateLocation(
+    @Req() req: Request,
+    @Body() body: UpdateLocationBody,
+  ) {
+    const user = req.user as User;
+    return this.usersService.updateLocation(user.id, body.latitude, body.longitude);
   }
 
   /**

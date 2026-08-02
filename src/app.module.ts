@@ -9,6 +9,8 @@ import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { GithubSyncModule } from './github-sync/github-sync.module';
 import { InterviewModule } from './interview/interview.module';
+import { HackathonsModule } from './hackathons/hackathons.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -30,6 +32,8 @@ import { InterviewModule } from './interview/interview.module';
     AuthModule,
     GithubSyncModule,
     InterviewModule,
+    HackathonsModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],
