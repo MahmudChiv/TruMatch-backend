@@ -97,10 +97,23 @@ model CommitmentScore {
 // ─── Hackathons ───────────────────────────────────────────────────────────────
 
 model Hackathon {
-  id                 String   @id @default(uuid())
+  id                 String    @id @default(uuid())
   title              String
   logoUrl            String?
-  description        String?
+  description        String?   // legacy short description (OG-only), kept for backwards compat
+
+  // ── AI-extracted rich fields ───────────────────────────────────────────────
+  shortDescription    String?  // concise blurb AI extracted (Path A/B)
+  fullDescription     String?  // full event body text AI extracted
+  eligibility         String?  // who can participate, AI extracted
+  teamSize            String?  // e.g. "2–4 members", AI extracted
+  prizePoolTotal      String?  // stored as-written: "₦1,000,000" — never parsed to number
+  prizeBreakdown      Json?    // JSON array of {place, prize} — only if source categorizes it
+  applicationDeadline DateTime? // separate from submissionDeadline; AI-extracted
+  extractionSource    String   @default("manual") // 'url' | 'image' | 'manual'
+  rawSourceText       String?  // page text (URL) or OCR transcript (image) — admin-only
+  imageUrl            String?  // stored flyer image path for image submissions — admin-only
+
   startDate          DateTime?
   endDate            DateTime?
   submissionDeadline DateTime?
@@ -108,8 +121,8 @@ model Hackathon {
   locationLabel      String?                        // city-level label, e.g. "Lagos, Nigeria"
   latitude           Float?                         // city-level precision
   longitude          Float?                         // city-level precision
-  externalUrl        String                          // required — where real registration lives
-  prizeInfo          String?                        // display-only, NOT transactional
+  externalUrl        String?                        // nullable: image submissions may not have a link yet
+  prizeInfo          String?                        // display-only legacy field, NOT transactional
   tags               String[] @default([])
   status             String   @default("pending")   // pending | verified | flagged
   submittedBy        String

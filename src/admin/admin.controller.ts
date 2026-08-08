@@ -91,4 +91,41 @@ export class AdminController {
       data: { status: body.status },
     });
   }
+
+  /**
+   * GET /admin/hackathons/:id/source
+   * Returns the raw extraction source data for a hackathon listing.
+   * This includes rawSourceText (page text or OCR transcript), imageUrl (stored flyer path),
+   * and extractionSource ('url' | 'image' | 'manual'), alongside the live externalUrl.
+   *
+   * Purpose: Allows admins to review pending or flagged submissions against their
+   * original source material before making a moderation decision.
+   * Access is gated behind JwtAuthGuard + AdminGuard — never exposed to public users.
+   */
+  @Get('hackathons/:id/source')
+  async getSource(@Param('id') id: string) {
+    const hackathon = await this.prisma.hackathon.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        title: true,
+        rawSourceText: true,
+        imageUrl: true,
+        extractionSource: true,
+        externalUrl: true,
+        status: true,
+        createdAt: true,
+        submitter: {
+          select: { username: true, email: true },
+        },
+      },
+    });
+
+    if (!hackathon) {
+      throw new NotFoundException('Hackathon not found');
+    }
+
+    return hackathon;
+  }
 }
+
