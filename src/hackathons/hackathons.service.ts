@@ -65,7 +65,7 @@ const EXTRACTION_SCHEMA: import('@google/generative-ai').ObjectSchema = {
     endDate:             { type: SchemaType.STRING,  description: 'Event end date in YYYY-MM-DD format, null if not found' },
     applicationDeadline: { type: SchemaType.STRING,  description: 'Application/registration deadline in YYYY-MM-DD format, null if not found' },
     submissionDeadline:  { type: SchemaType.STRING,  description: 'Project/hack submission deadline in YYYY-MM-DD format, null if not found (distinct from applicationDeadline)' },
-    locationLabel:       { type: SchemaType.STRING,  description: 'City-level location label, e.g. "Lagos, Nigeria" or "San Francisco, CA" — never a specific address. null if not found.' },
+    locationLabel:       { type: SchemaType.STRING,  description: 'location label, e.g. "UNILAG AI Studio, Lagos, Nigeria" or "San Francisco, CA". null if not found.' },
     venueType: {
       type: SchemaType.STRING,
       description: 'One of: physical, virtual, hybrid. Null if cannot be determined.',
@@ -85,7 +85,7 @@ const EXTRACTION_SCHEMA: import('@google/generative-ai').ObjectSchema = {
         required: ['place', 'prize'],
       },
     },
-    tags:        { type: SchemaType.ARRAY,   description: 'Relevant topic tags as lowercase strings, e.g. ["ai", "climate", "web3"]. Empty array if none.', items: { type: SchemaType.STRING } },
+    tags:        { type: SchemaType.ARRAY,   description: 'Relevant topic tags as lowercase strings, e.g. ["AI", "ML", "climate", "web3"]. Empty array if none.', items: { type: SchemaType.STRING } },
     externalUrl: { type: SchemaType.STRING,  description: 'Registration or event page URL — extract any link explicitly present in the source. null if no URL is found.' },
     low_confidence_fields: {
       type: SchemaType.ARRAY,
@@ -332,6 +332,41 @@ export class HackathonsService {
     }
   }
 
+  /**
+   * Private helper: Geocodes a text location string (e.g. "Lagos, Nigeria")
+   * into latitude & longitude coordinates using OpenStreetMap Nominatim.
+   */
+  private async geocodeLocationLabel(
+    locationLabel: string,
+  ): Promise<{ latitude: number; longitude: number } | null> {
+    if (!locationLabel || !locationLabel.trim()) return null;
+    try {
+      const query = encodeURIComponent(locationLabel.trim());
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1`,
+        {
+          headers: {
+            'User-Agent': 'TruMatchBot/1.0 (https://trumatch.dev)',
+          },
+        },
+      );
+      if (!res.ok) return null;
+      const data = (await res.json()) as Array<{ lat: string; lon: string }>;
+      if (Array.isArray(data) && data.length > 0) {
+        const lat = parseFloat(data[0].lat);
+        const lon = parseFloat(data[0].lon);
+        if (!isNaN(lat) && !isNaN(lon)) {
+          return { latitude: lat, longitude: lon };
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Geocoding failed for label "${locationLabel}": ${String(err)}`,
+      );
+    }
+    return null;
+  }
+
   // ── Public: Extraction Endpoints ──────────────────────────────────────────
 
   /**
@@ -398,7 +433,7 @@ export class HackathonsService {
         // SSRF Mitigation 3: Truncate response to 1MB max before parsing DOM
         const $ = cheerio.load(html.slice(0, 1000000));
 
-        // ── Open Graph & fallback meta tag extraction (legacy path, still used for logo + OG title)
+        // ── Open Graph & fallback meta tag extraction
         title =
           $('meta[property="og:title"]').attr('content') ||
           $('meta[name="twitter:title"]').attr('content') ||
@@ -419,16 +454,20 @@ export class HackathonsService {
         siteName =
           $('meta[property="og:site_name"]').attr('content') || null;
 
-        // ── Extract visible page text for Gemini and for rawSourceText storage
-        rawSourceText = extractVisibleText(html);
-
-        // ── Run Gemini structured extraction on the page text
-        if (rawSourceText) {
-          extracted = await this.runGeminiTextExtraction(rawSourceText);
+        // Resolve relative logo URL to absolute URL if needed
+        if (logoUrl && !logoUrl.startsWith('http://') && !logoUrl.startsWith('https://')) {
+          try {
+            logoUrl = new URL(logoUrl, parsedUrl.origin).toString();
+          } catch {
+            // Keep original if resolution fails
+          }
         }
+
+        // ── Extract visible page text for rawSourceText admin storage
+        rawSourceText = extractVisibleText(html);
       }
     } catch {
-      // Graceful fallback: If scraping fails/times out, proceed with user manual entry
+      // Graceful fallback: If scraping fails/times out, proceed with URL pre-filled form
       this.logger.warn(`URL fetch failed for ${rawUrl} — falling back to empty form`);
     }
 
@@ -436,16 +475,13 @@ export class HackathonsService {
     const duplicate = await this.checkDuplicate(rawUrl, title);
 
     return {
-      // OG data (for logo primarily)
-      title: extracted?.title ?? title,
-      description: extracted?.shortDescription ?? description,
+      // Pure OG metadata extraction
+      title,
+      description,
       logoUrl,
       siteName,
-      // AI-extracted rich fields
-      extracted,
-      // Admin-stored source snapshot (not sent to public API — included here for the frontend to pass back)
+      extracted: null,
       rawSourceText,
-      // Duplicate match if found
       duplicate,
     };
   }
@@ -580,6 +616,17 @@ export class HackathonsService {
     const trusted = await this.isTrustedSubmitter(userId);
     const initialStatus = trusted ? 'verified' : 'pending';
 
+    // Geocode locationLabel if provided and lat/lng coordinates are missing
+    let latitude = dto.latitude ?? null;
+    let longitude = dto.longitude ?? null;
+    if (dto.locationLabel && (latitude == null || longitude == null)) {
+      const coords = await this.geocodeLocationLabel(dto.locationLabel);
+      if (coords) {
+        latitude = coords.latitude;
+        longitude = coords.longitude;
+      }
+    }
+
     const hackathon = await this.prisma.hackathon.create({
       data: {
         title: dto.title,
@@ -607,8 +654,8 @@ export class HackathonsService {
           : null,
         venueType: dto.venueType || 'virtual',
         locationLabel: dto.locationLabel || null,
-        latitude: dto.latitude ?? null,
-        longitude: dto.longitude ?? null,
+        latitude,
+        longitude,
         prizeInfo: dto.prizeInfo || null,
         tags: dto.tags || [],
         status: initialStatus,
@@ -659,6 +706,27 @@ export class HackathonsService {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    // Auto-geocode any existing physical hackathons that have locationLabel but missing coordinates
+    await Promise.all(
+      hackathons.map(async (h) => {
+        if (h.locationLabel && (h.latitude == null || h.longitude == null)) {
+          const coords = await this.geocodeLocationLabel(h.locationLabel);
+          if (coords) {
+            h.latitude = coords.latitude;
+            h.longitude = coords.longitude;
+            await this.prisma.hackathon
+              .update({
+                where: { id: h.id },
+                data: { latitude: coords.latitude, longitude: coords.longitude },
+              })
+              .catch((err) =>
+                this.logger.warn(`Failed to persist geocoded coords for ${h.id}: ${String(err)}`),
+              );
+          }
+        }
+      }),
+    );
 
     const formatted = hackathons.map((h) => {
       let distance: number | null = null;
