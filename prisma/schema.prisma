@@ -27,6 +27,8 @@ model User {
   contextNote         String?           // User-authored note shown on public profile, does NOT affect score
   latitude            Float?            // City-level, for proximity-based hackathon discovery
   longitude           Float?            // City-level, for proximity-based hackathon discovery
+  roleTags            String[]          @default([]) // Backend, Frontend, Mobile, AI/ML, Design/UI, Product/PM, DevOps
+  primaryStack        String?           // e.g. "Node.js, TypeScript, NestJS"
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
   githubMetrics       GithubMetrics?
@@ -36,6 +38,10 @@ model User {
   hackathonVouches    HackathonVouch[]  @relation("HackathonVouches")
   hackathonReports    HackathonReport[] @relation("HackathonReports")
   hackathonJoins      HackathonJoin[]   @relation("HackathonJoins")
+  createdTeams        Team[]            @relation("CreatedTeams")
+  teamMemberships     TeamMember[]
+  sentInvites         TeamInvite[]      @relation("SentInvites")
+  receivedInvites     TeamInvite[]      @relation("ReceivedInvites")
 
   @@map("users")
 }
@@ -133,6 +139,8 @@ model Hackathon {
   vouches  HackathonVouch[]
   reports  HackathonReport[]
   joins    HackathonJoin[]
+  teams    Team[]
+  invites  TeamInvite[]
 
   @@map("hackathons")
 }
@@ -170,4 +178,52 @@ model HackathonJoin {
   @@id([hackathonId, userId])
   @@map("hackathon_joins")
 }
+
+// ─── Team Matching & Invites ───────────────────────────────────────────────────
+
+model Team {
+  id          String       @id @default(uuid())
+  hackathonId String
+  hackathon   Hackathon    @relation(fields: [hackathonId], references: [id], onDelete: Cascade)
+  creatorId   String
+  creator     User         @relation("CreatedTeams", fields: [creatorId], references: [id], onDelete: Cascade)
+  targetSize  Int          @default(4)
+  status      String       @default("forming") // forming | complete
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  members     TeamMember[]
+  invites     TeamInvite[]
+
+  @@map("teams")
+}
+
+model TeamMember {
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@id([teamId, userId])
+  @@map("team_members")
+}
+
+model TeamInvite {
+  id          String    @id @default(uuid())
+  hackathonId String
+  hackathon   Hackathon @relation(fields: [hackathonId], references: [id], onDelete: Cascade)
+  fromUserId  String
+  fromUser    User      @relation("SentInvites", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUserId    String
+  toUser      User      @relation("ReceivedInvites", fields: [toUserId], references: [id], onDelete: Cascade)
+  teamId      String?
+  team        Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  charterJson Json?     // AI-generated team charter draft for this pair match
+  status      String    @default("pending") // pending | accepted | declined
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("team_invites")
+}
+
 

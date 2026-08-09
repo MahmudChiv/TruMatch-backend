@@ -14,6 +14,8 @@ export interface GithubProfileData {
 export interface UpdateProfileDto {
   contextNote?: string | null;    // User-authored note, does NOT affect score
   bio?: string | null;            // GitHub bio (editable)
+  roleTags?: string[];            // Multi-select role tags: Backend, Frontend, Mobile, AI/ML, Design/UI, Product/PM, DevOps
+  primaryStack?: string | null;   // e.g. "Node.js, TypeScript, NestJS"
 }
 
 /** Shape for GET /users/:id/profile (public view) */
@@ -24,6 +26,8 @@ export interface PublicProfile {
   bio: string | null;
   bioSummary: string | null;         // From interview — separate from GitHub bio
   contextNote: string | null;
+  roleTags: string[];
+  primaryStack: string | null;
   commitmentScore: {
     score: number;
     githubScore: number;
@@ -118,6 +122,8 @@ export class UsersService {
     const data: Record<string, unknown> = {};
     if (dto.contextNote !== undefined) data.contextNote = dto.contextNote;
     if (dto.bio !== undefined) data.bio = dto.bio;
+    if (dto.roleTags !== undefined) data.roleTags = dto.roleTags;
+    if (dto.primaryStack !== undefined) data.primaryStack = dto.primaryStack;
 
     return this.prisma.user.update({
       where: { id: userId },
@@ -129,6 +135,8 @@ export class UsersService {
         avatarUrl: true,
         bio: true,
         contextNote: true,
+        roleTags: true,
+        primaryStack: true,
         updatedAt: true,
       },
     });
@@ -137,7 +145,7 @@ export class UsersService {
   /**
    * Fetch the public profile for a user by ID.
    * Shows: bio, commitment score with breakdown, GitHub confidence tier,
-   * context note, and (later) aggregate peer rating.
+   * context note, role tags, primary stack, and (later) aggregate peer rating.
    */
   async getPublicProfile(userId: string): Promise<PublicProfile | null> {
     const [user, commitmentScore, githubMetrics, interviewSession] = await Promise.all([
@@ -149,6 +157,8 @@ export class UsersService {
           avatarUrl: true,
           bio: true,
           contextNote: true,
+          roleTags: true,
+          primaryStack: true,
         },
       }),
       this.prisma.commitmentScore.findUnique({
@@ -187,6 +197,8 @@ export class UsersService {
       bio: user.bio,
       bioSummary: interviewSession?.bioSummary ?? null,
       contextNote: user.contextNote,
+      roleTags: user.roleTags ?? [],
+      primaryStack: user.primaryStack ?? null,
       commitmentScore: commitmentScore
         ? {
             score: commitmentScore.commitmentScore,
@@ -222,6 +234,8 @@ export class UsersService {
             avatarUrl: true,
             bio: true,
             contextNote: true,
+            roleTags: true,
+            primaryStack: true,
             commitmentScore: true,
             createdAt: true,
             updatedAt: true,

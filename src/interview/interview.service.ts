@@ -28,6 +28,7 @@ import type { RepoSignals } from '../github-sync/github-sync.service';
 const BASELINE_QUESTIONS = [
   // Bio question — first, to populate bio_summary
   'Tell us about yourself — your background, what you\'re into, what kind of work excites you.',
+  'What roles do you typically take on in a team? (Backend, Frontend, Mobile, AI/ML, Design/UI, Product/PM, DevOps) — and what is your primary tech stack?',
   'Tell me about a few projects you have worked on recently.',
   'Of those projects, which ones did you actually finish and ship? What happened to the others?',
   'When a project gets difficult or you hit a blocker, what do you typically do?',
@@ -78,6 +79,15 @@ const ANALYSIS_RESPONSE_SCHEMA: import('@google/generative-ai').ObjectSchema = {
       type: SchemaType.NUMBER,
       description: 'Hours per day the user declared they can commit',
     },
+    role_tags: {
+      type: SchemaType.ARRAY,
+      description: 'List of role tags extracted from response from: Backend, Frontend, Mobile, AI/ML, Design/UI, Product/PM, DevOps',
+      items: { type: SchemaType.STRING },
+    },
+    primary_stack: {
+      type: SchemaType.STRING,
+      description: 'Concise text summary of user\'s primary tech stack, e.g. "Node.js, TypeScript, NestJS"',
+    },
     flagged_discrepancies: {
       type: SchemaType.ARRAY,
       items: {
@@ -117,6 +127,8 @@ const ANALYSIS_RESPONSE_SCHEMA: import('@google/generative-ai').ObjectSchema = {
   required: [
     'specificity_score',
     'declared_hours_per_day',
+    'role_tags',
+    'primary_stack',
     'flagged_discrepancies',
     'communication_style_notes',
     'bio_summary',
@@ -485,10 +497,18 @@ export class InterviewService {
       },
     });
 
-    // ── Also update the denormalised commitmentScore on User ─────────────
+    // ── Also update the denormalised commitmentScore, roleTags, and primaryStack on User ─────────────
+    const userUpdateData: Record<string, unknown> = { commitmentScore };
+    if (Array.isArray(analysis.role_tags) && analysis.role_tags.length > 0) {
+      userUpdateData.roleTags = analysis.role_tags;
+    }
+    if (analysis.primary_stack) {
+      userUpdateData.primaryStack = analysis.primary_stack;
+    }
+
     await this.prisma.user.update({
       where: { id: userId },
-      data: { commitmentScore },
+      data: userUpdateData,
     });
 
     this.logger.log(

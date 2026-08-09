@@ -11,6 +11,7 @@ import { GithubSyncModule } from './github-sync/github-sync.module';
 import { InterviewModule } from './interview/interview.module';
 import { HackathonsModule } from './hackathons/hackathons.module';
 import { AdminModule } from './admin/admin.module';
+import { MatchingModule } from './matching/matching.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { AdminModule } from './admin/admin.module';
     InterviewModule,
     HackathonsModule,
     AdminModule,
+    MatchingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

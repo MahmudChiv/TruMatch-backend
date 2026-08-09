@@ -96,6 +96,8 @@ export interface DiscrepancyExplanation {
 export interface InterviewAnalysis {
   specificity_score: number;           // 0-100
   declared_hours_per_day: number;
+  role_tags: string[];                 // Parsed role tags: Backend, Frontend, Mobile, AI/ML, Design/UI, Product/PM, DevOps
+  primary_stack: string;               // User's self-reported primary tech stack
   flagged_discrepancies: Array<{
     repo: string;
     issue: string;

@@ -19,6 +19,8 @@ import { User } from '@prisma/client';
 class UpdateProfileBody {
   contextNote?: string | null;
   bio?: string | null;
+  roleTags?: string[];
+  primaryStack?: string | null;
 }
 
 class UpdateLocationBody {
