@@ -184,7 +184,7 @@ export class HackathonsService {
   private readonly reportThreshold: number;
   private readonly trustedSubmitterThreshold: number;
   private readonly genAI: GoogleGenerativeAI;
-  private readonly supabase: SupabaseClient;
+  private readonly supabase: SupabaseClient | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -214,8 +214,10 @@ export class HackathonsService {
     const supabaseKey = this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY');
     if (!supabaseUrl || !supabaseKey) {
       this.logger.warn('SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — image upload will be disabled');
+      this.supabase = null;
+    } else {
+      this.supabase = createClient(supabaseUrl, supabaseKey);
     }
-    this.supabase = createClient(supabaseUrl || '', supabaseKey || '');
   }
 
   // ── Private: Gemini Extraction ─────────────────────────────────────────────
@@ -309,6 +311,11 @@ export class HackathonsService {
     buffer: Buffer,
     mimeType: string,
   ): Promise<string | null> {
+    if (!this.supabase) {
+      this.logger.warn('Supabase client not initialized — skipping image upload');
+      return null;
+    }
+
     try {
       const ext = mimeType.split('/')[1] || 'jpg';
       const path = `flyers/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
