@@ -4,9 +4,12 @@ import {
   NotFoundException,
   ForbiddenException,
   Logger,
+  Optional,
+  Inject,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { RatingsGateway } from '../ratings/ratings.gateway';
 import {
   GoogleGenerativeAI,
   HarmCategory,
@@ -38,10 +41,9 @@ const MATCHING_RESPONSE_SCHEMA: import('@google/generative-ai').ObjectSchema = {
           compatibilityScore: { type: SchemaType.NUMBER, description: 'Compatibility score 0-100' },
           teamCharter: {
             type: SchemaType.OBJECT,
-            description: 'AI-generated Team Charter defining mutual expectations between requester and candidate',
             properties: {
-              visionStatement: { type: SchemaType.STRING, description: 'Shared project vision and goal' },
-              roleComplementarity: { type: SchemaType.STRING, description: 'How their skills and stacks combine' },
+              visionStatement: { type: SchemaType.STRING, description: 'Unified vision for what the team will build' },
+              roleComplementarity: { type: SchemaType.STRING, description: 'How candidate and requester roles complement each other' },
               availabilityAgreement: { type: SchemaType.STRING, description: 'Agreed daily commitment and schedule alignment' },
               communicationProtocol: { type: SchemaType.STRING, description: 'Preferred communication channels and check-in frequency' },
               commitmentPromise: { type: SchemaType.STRING, description: 'Mutual promise regarding completion and accountability' },
@@ -96,6 +98,7 @@ export class MatchingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    @Optional() private readonly ratingsGateway?: RatingsGateway,
   ) {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
     if (!apiKey) throw new Error('GEMINI_API_KEY is not set in environment');
@@ -453,7 +456,7 @@ Produce the JSON response now.
     const fromName = requester?.name || requester?.username || 'A user';
     const hackTitle = hackathon?.title || 'a hackathon';
 
-    await this.prisma.notification.create({
+    const notifRecord = await this.prisma.notification.create({
       data: {
         userId: toUserId,
         type: 'team_invite',
@@ -469,6 +472,10 @@ Produce the JSON response now.
         },
       },
     });
+
+    if (this.ratingsGateway) {
+      this.ratingsGateway.emitNotification(toUserId, notifRecord);
+    }
 
     return invite;
   }
@@ -508,6 +515,17 @@ Produce the JSON response now.
         data: { status: 'accepted' },
       });
 
+      // Auto-settle any reverse pending invite from responder to inviter for this hackathon
+      await this.prisma.teamInvite.updateMany({
+        where: {
+          hackathonId: invite.hackathonId,
+          fromUserId: userId,
+          toUserId: invite.fromUserId,
+          status: 'pending',
+        },
+        data: { status: 'accepted' },
+      });
+
       if (invite.teamId) {
         // Add member to team if not already present
         await this.prisma.teamMember.upsert({
@@ -531,7 +549,7 @@ Produce the JSON response now.
       }
 
       // Notify the inviter that their invite was accepted
-      await this.prisma.notification.create({
+      const notifRecord = await this.prisma.notification.create({
         data: {
           userId: invite.fromUserId,
           type: 'invite_accepted',
@@ -546,6 +564,10 @@ Produce the JSON response now.
         },
       });
 
+      if (this.ratingsGateway) {
+        this.ratingsGateway.emitNotification(invite.fromUserId, notifRecord);
+      }
+
       return { status: 'accepted', teamId: invite.teamId };
     } else {
       // Action === 'decline'
@@ -555,7 +577,7 @@ Produce the JSON response now.
       });
 
       // Notify the inviter that their invite was declined
-      await this.prisma.notification.create({
+      const notifRecord = await this.prisma.notification.create({
         data: {
           userId: invite.fromUserId,
           type: 'invite_declined',
@@ -569,6 +591,10 @@ Produce the JSON response now.
           },
         },
       });
+
+      if (this.ratingsGateway) {
+        this.ratingsGateway.emitNotification(invite.fromUserId, notifRecord);
+      }
 
       // Automatically generate 1 replacement candidate suggestion
       const replacementPool = await this.findTeammates(
