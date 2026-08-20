@@ -535,6 +535,62 @@ export class RatingsService {
   }
 
   /**
+   * Immediately fires 'rate_teammates' notifications to all team members
+   * when a team is completed (either manually or by filling targetSize).
+   */
+  async fireRatingNotificationsForTeam(teamId: string): Promise<number> {
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: {
+        hackathon: { select: { id: true, title: true } },
+        members: { select: { userId: true } },
+        ratings: { select: { raterId: true, rateeId: true } },
+      },
+    });
+
+    if (!team || team.members.length < 2) return 0;
+
+    let sent = 0;
+    const memberIds = team.members.map((m) => m.userId);
+
+    for (const raterId of memberIds) {
+      const otherMemberIds = memberIds.filter((id) => id !== raterId);
+      const givenRatings = team.ratings.filter((r) => r.raterId === raterId);
+      const ratedSet = new Set(givenRatings.map((r) => r.rateeId));
+      const unratedCount = otherMemberIds.filter((id) => !ratedSet.has(id)).length;
+
+      if (unratedCount > 0) {
+        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const recentNotif = await this.prisma.notification.findFirst({
+          where: {
+            userId: raterId,
+            type: 'rate_teammates',
+            createdAt: { gte: oneDayAgo },
+            payload: {
+              path: ['teamId'],
+              equals: team.id,
+            },
+          },
+        });
+
+        if (!recentNotif) {
+          await this.createNotification(raterId, 'rate_teammates', {
+            teamId: team.id,
+            hackathonId: team.hackathon.id,
+            hackathonTitle: team.hackathon.title,
+            unratedCount,
+            message: `Your team is complete! Rate your teammate(s) for ${team.hackathon.title}`,
+          });
+          sent++;
+        }
+      }
+    }
+
+    this.logger.log(`Fired ${sent} immediate rating notifications for team ${teamId}`);
+    return sent;
+  }
+
+  /**
    * Helper to create in-app notifications and emit WS event.
    */
   async createNotification(userId: string, type: string, payload: any) {

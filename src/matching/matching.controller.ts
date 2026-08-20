@@ -98,4 +98,15 @@ export class MatchingController {
     const user = req.user as User;
     return this.matchingService.getMyPendingInvite(hackathonId, user.id);
   }
+
+  /**
+   * POST /teams/:teamId/complete
+   * Marks team status as complete and fires rating notifications to all members immediately.
+   */
+  @Post('teams/:teamId/complete')
+  @HttpCode(HttpStatus.OK)
+  async completeTeam(@Req() req: Request, @Param('teamId') teamId: string) {
+    const user = req.user as User;
+    return this.matchingService.completeTeam(teamId, user.id);
+  }
 }

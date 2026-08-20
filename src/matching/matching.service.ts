@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { RatingsGateway } from '../ratings/ratings.gateway';
+import { RatingsService } from '../ratings/ratings.service';
 import {
   GoogleGenerativeAI,
   HarmCategory,
@@ -99,6 +100,7 @@ export class MatchingService {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     @Optional() private readonly ratingsGateway?: RatingsGateway,
+    @Optional() private readonly ratingsService?: RatingsService,
   ) {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
     if (!apiKey) throw new Error('GEMINI_API_KEY is not set in environment');
@@ -545,6 +547,9 @@ Produce the JSON response now.
             where: { id: invite.teamId },
             data: { status: 'complete' },
           });
+          if (this.ratingsService) {
+            await this.ratingsService.fireRatingNotificationsForTeam(invite.teamId);
+          }
         }
       }
 
@@ -699,5 +704,60 @@ Produce the JSON response now.
     ]);
 
     return { incoming, outgoing };
+  }
+
+  /**
+   * Manually marks a team as 'complete' (no longer accepting teammates).
+   * Fires immediate 'rate_teammates' notifications to all members.
+   */
+  async completeTeam(teamId: string, userId: string) {
+    const team = await this.prisma.team.findUnique({
+      where: { id: teamId },
+      include: {
+        members: {
+          include: {
+            user: {
+              select: { id: true, username: true, name: true, avatarUrl: true },
+            },
+          },
+        },
+        hackathon: true,
+      },
+    });
+
+    if (!team) {
+      throw new NotFoundException('Team not found');
+    }
+
+    const isMember = team.members.some((m) => m.userId === userId);
+    if (!isMember && team.creatorId !== userId) {
+      throw new ForbiddenException('You are not a member of this team');
+    }
+
+    if (team.status === 'complete') {
+      return team;
+    }
+
+    const updated = await this.prisma.team.update({
+      where: { id: teamId },
+      data: { status: 'complete' },
+      include: {
+        members: {
+          include: {
+            user: {
+              select: { id: true, username: true, name: true, avatarUrl: true },
+            },
+          },
+        },
+        hackathon: true,
+      },
+    });
+
+    if (this.ratingsService) {
+      await this.ratingsService.fireRatingNotificationsForTeam(teamId);
+    }
+
+    this.logger.log(`Team ${teamId} manually marked complete by user ${userId}`);
+    return updated;
   }
 }
