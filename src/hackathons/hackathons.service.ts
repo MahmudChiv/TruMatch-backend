@@ -843,6 +843,48 @@ export class HackathonsService {
     const hasJoined = hackathon.joins.some((j) => j.userId === userId);
     const hasVouched = hackathon.vouches.length > 0;
 
+    // Check if requesting user is in a team for this hackathon
+    const teamMembership = await this.prisma.teamMember.findFirst({
+      where: {
+        userId,
+        team: { hackathonId: id },
+      },
+      include: {
+        team: {
+          include: {
+            members: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    username: true,
+                    name: true,
+                    email: true,
+                    avatarUrl: true,
+                    roleTags: true,
+                    primaryStack: true,
+                    commitmentScore: true,
+                    bio: true,
+                  },
+                },
+              },
+            },
+            creator: {
+              select: {
+                id: true,
+                username: true,
+                name: true,
+                email: true,
+                avatarUrl: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const myTeam = teamMembership ? teamMembership.team : null;
+
     // Destructure to exclude admin-only fields from the public response
     const {
       rawSourceText: _raw,
@@ -858,6 +900,7 @@ export class HackathonsService {
       hasJoined,
       hasVouched,
       participants: hackathon.joins.map((j) => j.user),
+      myTeam,
     };
   }
 
