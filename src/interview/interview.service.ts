@@ -248,6 +248,69 @@ export class InterviewService {
     };
   }
 
+  /**
+   * Resumes an existing active interview session if status === 'in_progress'.
+   * Sanitizes incomplete turns (if disconnect happened mid-stream before assistant reply).
+   * If no active in_progress session exists, returns resumed: false.
+   */
+  async resumeInterview(userId: string): Promise<{
+    resumed: boolean;
+    sessionId: string;
+    transcript: TranscriptEntry[];
+    preInterviewWarning: string;
+    isFinished?: boolean;
+  }> {
+    const session = await this.prisma.interviewSession.findUnique({
+      where: { userId },
+    });
+
+    if (!session || session.status !== 'in_progress') {
+      return {
+        resumed: false,
+        sessionId: '',
+        transcript: [],
+        preInterviewWarning: WARNING_TEXTS.preInterview,
+      };
+    }
+
+    let transcript = (session.transcriptJson as unknown as TranscriptEntry[]) ?? [];
+
+    // Edge case: disconnect happened mid-stream after user answer but before assistant response was persisted
+    if (transcript.length > 0 && transcript[transcript.length - 1].role === 'user') {
+      this.logger.warn(
+        `Session ${session.id} transcript ended with un-replied user answer. Rolling back trailing turn for resume.`,
+      );
+      transcript = transcript.slice(0, -1);
+      await this.prisma.interviewSession.update({
+        where: { id: session.id },
+        data: { transcriptJson: transcript as any },
+      });
+    }
+
+    const metrics = await this.prisma.githubMetrics.findUnique({ where: { userId } });
+    const githubConfidence = (metrics?.githubConfidence ?? 'insufficient') as GithubConfidenceTier;
+    const accountCreatedAt = metrics?.accountCreatedAt ?? null;
+    const allQuestions = this.getQuestionSet(githubConfidence, accountCreatedAt);
+    const completedAiTurns = transcript.filter((t) => t.role === 'assistant').length;
+    const lastAssistantMsg = [...transcript].reverse().find((t) => t.role === 'assistant')?.content || '';
+
+    const isFinished =
+      lastAssistantMsg.includes('[INTERVIEW_COMPLETE]') ||
+      (completedAiTurns >= allQuestions.length && transcript[transcript.length - 1]?.role === 'assistant');
+
+    this.logger.log(
+      `Interview session ${session.id} resumed for user ${userId} (${transcript.length} messages in transcript)`,
+    );
+
+    return {
+      resumed: true,
+      sessionId: session.id,
+      transcript,
+      preInterviewWarning: WARNING_TEXTS.preInterview,
+      isFinished,
+    };
+  }
+
   // ── Public: handle a user answer ─────────────────────────────────────────
 
   /**

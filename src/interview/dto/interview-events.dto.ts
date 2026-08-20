@@ -24,6 +24,20 @@ export interface InterviewCompletePayload {
 
 // ─── Server → Client events ───────────────────────────────────────────────────
 
+/** Client → Server: resume an existing interview */
+export interface InterviewResumePayload {
+  userId: string;
+}
+
+/** Returned in acknowledgement or emitted event for interview:resume */
+export interface InterviewResumeResponseEvent {
+  resumed: boolean;
+  sessionId: string;
+  transcript: TranscriptEntry[];
+  preInterviewWarning: string;
+  isFinished?: boolean;
+}
+
 /** Returned in the acknowledgement of interview:start */
 export interface InterviewStartResponseEvent {
   sessionId: string;

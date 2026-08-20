@@ -12,6 +12,7 @@ import { Server, Socket } from 'socket.io';
 import { InterviewService } from './interview.service';
 import type {
   InterviewStartPayload,
+  InterviewResumePayload,
   InterviewAnswerPayload,
   InterviewCompletePayload,
   InterviewChunkEvent,
@@ -19,6 +20,7 @@ import type {
   InterviewCompleteEvent,
   InterviewErrorEvent,
   InterviewStartResponseEvent,
+  InterviewResumeResponseEvent,
 } from './dto/interview-events.dto';
 
 @WebSocketGateway({
@@ -59,6 +61,42 @@ export class InterviewGateway
     await client.join(room);
     this.logger.debug(`Socket ${client.id} joined room ${room}`);
     return { joined: true };
+  }
+
+  /**
+   * Client emits 'interview:resume'.
+   * Checks for an existing active session with status 'in_progress'.
+   * If found, returns the sanitized transcript and session state without generating
+   * a new question or losing context.
+   * If no in_progress session exists, falls back to normal interview:start behavior.
+   */
+  @SubscribeMessage('interview:resume')
+  async handleResume(
+    @MessageBody() data: InterviewResumePayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const { userId } = data;
+    const room = `user:${userId}`;
+
+    this.logger.log(`interview:resume received for user ${userId}`);
+
+    try {
+      const result = await this.interviewService.resumeInterview(userId);
+
+      if (result.resumed) {
+        const response: InterviewResumeResponseEvent = result;
+        this.server.to(room).emit('interview:resumed', response);
+        return response;
+      }
+
+      // Fall back to fresh start if no in_progress session exists
+      return this.handleStart({ userId }, client);
+    } catch (err) {
+      const reason = (err as Error).message;
+      this.logger.error(`interview:resume failed for user ${userId}: ${reason}`);
+      const event: InterviewErrorEvent = { sessionId: '', reason };
+      client.emit('interview:error', event);
+    }
   }
 
   /**
