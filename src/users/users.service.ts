@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { RatingsService } from '../ratings/ratings.service';
+import { PublicPeerRatingSummaryDto } from '../ratings/dto/rating-response.dto';
 
 export interface GithubProfileData {
   githubId: string;
@@ -32,13 +34,16 @@ export interface PublicProfile {
     score: number;
     githubScore: number;
     interviewScore: number;
+    peerRatingScore: number | null;
     appliedGithubWeight: number;
     appliedInterviewWeight: number;
+    appliedPeerWeight: number;
+    distinctTeamsRated: number;
     scoreExplanationSummary: string | null;
   } | null;
   githubConfidence: string;           // 'high' | 'low' | 'insufficient'
   githubConfidenceLabel: string;      // Human-readable label
-  peerRating: null;                   // Placeholder for future Rating module
+  peerRating: PublicPeerRatingSummaryDto | null;
 }
 
 /**
@@ -60,7 +65,10 @@ function getConfidenceLabel(confidence: string): string {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly ratingsService: RatingsService,
+  ) {}
 
   async findOrCreateFromGithub(profile: GithubProfileData) {
     return this.prisma.user.upsert({
@@ -145,46 +153,51 @@ export class UsersService {
   /**
    * Fetch the public profile for a user by ID.
    * Shows: bio, commitment score with breakdown, GitHub confidence tier,
-   * context note, role tags, primary stack, and (later) aggregate peer rating.
+   * context note, role tags, primary stack, and aggregate peer rating.
    */
   async getPublicProfile(userId: string): Promise<PublicProfile | null> {
-    const [user, commitmentScore, githubMetrics, interviewSession] = await Promise.all([
-      this.prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          username: true,
-          name: true,
-          avatarUrl: true,
-          bio: true,
-          contextNote: true,
-          roleTags: true,
-          primaryStack: true,
-        },
-      }),
-      this.prisma.commitmentScore.findUnique({
-        where: { userId },
-        select: {
-          commitmentScore: true,
-          githubScore: true,
-          interviewScore: true,
-          appliedGithubWeight: true,
-          appliedInterviewWeight: true,
-          scoreExplanationSummary: true,
-        },
-      }),
-      this.prisma.githubMetrics.findUnique({
-        where: { userId },
-        select: {
-          githubConfidence: true,
-        },
-      }),
-      this.prisma.interviewSession.findUnique({
-        where: { userId },
-        select: {
-          bioSummary: true,
-        },
-      }),
-    ]);
+    const [user, commitmentScore, githubMetrics, interviewSession, peerRatingSummary] =
+      await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            username: true,
+            name: true,
+            avatarUrl: true,
+            bio: true,
+            contextNote: true,
+            roleTags: true,
+            primaryStack: true,
+          },
+        }),
+        this.prisma.commitmentScore.findUnique({
+          where: { userId },
+          select: {
+            commitmentScore: true,
+            githubScore: true,
+            interviewScore: true,
+            peerRatingScore: true,
+            appliedGithubWeight: true,
+            appliedInterviewWeight: true,
+            appliedPeerWeight: true,
+            distinctTeamsRated: true,
+            scoreExplanationSummary: true,
+          },
+        }),
+        this.prisma.githubMetrics.findUnique({
+          where: { userId },
+          select: {
+            githubConfidence: true,
+          },
+        }),
+        this.prisma.interviewSession.findUnique({
+          where: { userId },
+          select: {
+            bioSummary: true,
+          },
+        }),
+        this.ratingsService.getPublicPeerRatingSummary(userId),
+      ]);
 
     if (!user) return null;
 
@@ -204,14 +217,17 @@ export class UsersService {
             score: commitmentScore.commitmentScore,
             githubScore: commitmentScore.githubScore,
             interviewScore: commitmentScore.interviewScore,
+            peerRatingScore: commitmentScore.peerRatingScore,
             appliedGithubWeight: commitmentScore.appliedGithubWeight,
             appliedInterviewWeight: commitmentScore.appliedInterviewWeight,
+            appliedPeerWeight: commitmentScore.appliedPeerWeight,
+            distinctTeamsRated: commitmentScore.distinctTeamsRated,
             scoreExplanationSummary: commitmentScore.scoreExplanationSummary,
           }
         : null,
       githubConfidence: confidence,
       githubConfidenceLabel: getConfidenceLabel(confidence),
-      peerRating: null, // Placeholder — will be populated when Rating module exists
+      peerRating: peerRatingSummary,
     };
   }
 
@@ -266,5 +282,26 @@ export class UsersService {
       githubMetrics,
       interviewSession,
     };
+  }
+
+  /**
+   * Get recent notifications for a user.
+   */
+  async getNotifications(userId: string) {
+    return this.prisma.notification.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+  }
+
+  /**
+   * Mark a notification as read.
+   */
+  async markNotificationRead(userId: string, notificationId: string) {
+    return this.prisma.notification.updateMany({
+      where: { id: notificationId, userId },
+      data: { readAt: new Date() },
+    });
   }
 }

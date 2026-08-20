@@ -194,7 +194,17 @@ export class InterviewService {
       );
     }
 
-    // ── 2. Create / reset interview session ───────────────────────────────
+    // ── 2. Check if interview is already complete (one-time onboarding interview) ──
+    const existingSession = await this.prisma.interviewSession.findUnique({
+      where: { userId },
+    });
+
+    if (existingSession && existingSession.status === 'complete') {
+      throw new Error(
+        'Interview has already been completed. Retaking the interview is not allowed.',
+      );
+    }
+
     const session = await this.prisma.interviewSession.upsert({
       where: { userId },
       create: {

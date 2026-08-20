@@ -66,6 +66,24 @@ export class UsersController {
     return this.usersService.updateLocation(user.id, body.latitude, body.longitude);
   }
 
+  @Get('me/notifications')
+  @UseGuards(JwtAuthGuard)
+  async getNotifications(@Req() req: Request) {
+    const user = req.user as User;
+    return this.usersService.getNotifications(user.id);
+  }
+
+  @Patch('me/notifications/:id/read')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async markNotificationRead(
+    @Req() req: Request,
+    @Param('id') id: string,
+  ) {
+    const user = req.user as User;
+    return this.usersService.markNotificationRead(user.id, id);
+  }
+
   /**
    * GET /users/:id/profile
    * Public profile view showing:
@@ -73,7 +91,7 @@ export class UsersController {
    * - Commitment score with full breakdown
    * - GitHub confidence tier (shown plainly, e.g. "New developer — limited GitHub history")
    * - Context note (if set)
-   * - Aggregate peer rating (placeholder — null until Rating module exists)
+   * - Aggregate peer rating
    */
   @Get(':id/profile')
   async getPublicProfile(@Param('id') id: string) {

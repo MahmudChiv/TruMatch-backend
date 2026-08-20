@@ -12,6 +12,7 @@ import { InterviewModule } from './interview/interview.module';
 import { HackathonsModule } from './hackathons/hackathons.module';
 import { AdminModule } from './admin/admin.module';
 import { MatchingModule } from './matching/matching.module';
+import { RatingsModule } from './ratings/ratings.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { MatchingModule } from './matching/matching.module';
     HackathonsModule,
     AdminModule,
     MatchingModule,
+    RatingsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -42,6 +42,9 @@ model User {
   teamMemberships     TeamMember[]
   sentInvites         TeamInvite[]      @relation("SentInvites")
   receivedInvites     TeamInvite[]      @relation("ReceivedInvites")
+  givenRatings        Rating[]          @relation("GivenRatings")
+  receivedRatings     Rating[]          @relation("ReceivedRatings")
+  notifications       Notification[]
 
   @@map("users")
 }
@@ -94,6 +97,10 @@ model CommitmentScore {
   discrepancyResolutionPattern Float?                 // ratio: explained / flagged (0-1, null if no flags)
   communicationNotes           String?
   scoreExplanationSummary      String?                // AI-generated plain-language paragraph explaining the score
+  peerRatingScore              Float?
+  peerWeight                   Float    @default(0)
+  appliedPeerWeight            Float    @default(0)
+  distinctTeamsRated           Int      @default(0)
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
 
@@ -193,6 +200,7 @@ model Team {
   updatedAt   DateTime     @updatedAt
   members     TeamMember[]
   invites     TeamInvite[]
+  ratings     Rating[]
 
   @@map("teams")
 }
@@ -224,6 +232,37 @@ model TeamInvite {
   updatedAt   DateTime  @updatedAt
 
   @@map("team_invites")
+}
+
+model Rating {
+  id                 String    @id @default(uuid())
+  teamId             String
+  team               Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  raterId            String
+  rater              User      @relation("GivenRatings", fields: [raterId], references: [id], onDelete: Cascade)
+  rateeId            String
+  ratee              User      @relation("ReceivedRatings", fields: [rateeId], references: [id], onDelete: Cascade)
+  deliveredScore     Int
+  communicationScore Int
+  wouldWorkAgain     Boolean
+  comment            String?
+  visibleAt          DateTime?
+  createdAt          DateTime  @default(now())
+
+  @@unique([teamId, raterId, rateeId])
+  @@map("ratings")
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  payload   Json
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("notifications")
 }
 
 
