@@ -193,16 +193,22 @@ export class MatchingService {
       ...completeTeamMembers.map((m) => m.userId),
     ]);
 
-    // Exclude users already invited (pending or accepted) by requester for this hackathon
+    // Exclude users already invited (pending or accepted) in either direction for this hackathon
     const existingInvites = await this.prisma.teamInvite.findMany({
       where: {
         hackathonId,
-        fromUserId: requestingUserId,
+        OR: [
+          { fromUserId: requestingUserId },
+          { toUserId: requestingUserId },
+        ],
         status: { in: ['pending', 'accepted'] },
       },
-      select: { toUserId: true },
+      select: { fromUserId: true, toUserId: true },
     });
-    existingInvites.forEach((inv) => excludeUserIds.add(inv.toUserId));
+    existingInvites.forEach((inv) => {
+      excludeUserIds.add(inv.fromUserId);
+      excludeUserIds.add(inv.toUserId);
+    });
 
     const eligibleUserIds = joinedUserIds.filter((id) => !excludeUserIds.has(id));
 
@@ -367,7 +373,7 @@ Produce the JSON response now.
       throw new BadRequestException('You cannot invite yourself');
     }
 
-    // Check if invite already exists
+    // Check if invite already exists from me to user
     const existing = await this.prisma.teamInvite.findFirst({
       where: {
         hackathonId,
@@ -382,6 +388,21 @@ Produce the JSON response now.
       if (existing.status === 'accepted') {
         throw new BadRequestException('Candidate has already accepted an invite');
       }
+    }
+
+    // Check if reverse invite already exists from user to me
+    const reverseInvite = await this.prisma.teamInvite.findFirst({
+      where: {
+        hackathonId,
+        fromUserId: toUserId,
+        toUserId: fromUserId,
+        status: 'pending',
+      },
+    });
+    if (reverseInvite) {
+      throw new BadRequestException(
+        'This user has already sent you a team invite! Accept their invite from your notifications or the hackathon page to join teams.',
+      );
     }
 
     // Find or create requester's forming team
@@ -406,7 +427,7 @@ Produce the JSON response now.
       });
     }
 
-    // Create or update TeamInvite
+    // Create TeamInvite
     const invite = await this.prisma.teamInvite.create({
       data: {
         hackathonId,
@@ -419,6 +440,32 @@ Produce the JSON response now.
       include: {
         toUser: {
           select: { id: true, username: true, name: true, avatarUrl: true },
+        },
+      },
+    });
+
+    // Create in-app Notification for candidate (toUserId)
+    const [requester, hackathon] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: fromUserId } }),
+      this.prisma.hackathon.findUnique({ where: { id: hackathonId } }),
+    ]);
+
+    const fromName = requester?.name || requester?.username || 'A user';
+    const hackTitle = hackathon?.title || 'a hackathon';
+
+    await this.prisma.notification.create({
+      data: {
+        userId: toUserId,
+        type: 'team_invite',
+        payload: {
+          message: `${fromName} invited you to join their team for ${hackTitle}`,
+          inviteId: invite.id,
+          hackathonId,
+          hackathonTitle: hackTitle,
+          fromUserId,
+          fromUsername: fromName,
+          fromAvatarUrl: requester?.avatarUrl || null,
+          charterJson: charterJson || undefined,
         },
       },
     });
@@ -448,6 +495,13 @@ Produce the JSON response now.
       throw new BadRequestException(`Invite has already been ${invite.status}`);
     }
 
+    const [responder, hackathon] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId } }),
+      this.prisma.hackathon.findUnique({ where: { id: invite.hackathonId } }),
+    ]);
+    const responderName = responder?.name || responder?.username || 'A candidate';
+    const hackTitle = hackathon?.title || 'the hackathon';
+
     if (action === 'accept') {
       await this.prisma.teamInvite.update({
         where: { id: inviteId },
@@ -476,12 +530,44 @@ Produce the JSON response now.
         }
       }
 
+      // Notify the inviter that their invite was accepted
+      await this.prisma.notification.create({
+        data: {
+          userId: invite.fromUserId,
+          type: 'invite_accepted',
+          payload: {
+            message: `${responderName} accepted your team invite for ${hackTitle}!`,
+            inviteId: invite.id,
+            hackathonId: invite.hackathonId,
+            hackathonTitle: hackTitle,
+            toUserId: userId,
+            toUsername: responderName,
+          },
+        },
+      });
+
       return { status: 'accepted', teamId: invite.teamId };
     } else {
       // Action === 'decline'
       await this.prisma.teamInvite.update({
         where: { id: inviteId },
         data: { status: 'declined' },
+      });
+
+      // Notify the inviter that their invite was declined
+      await this.prisma.notification.create({
+        data: {
+          userId: invite.fromUserId,
+          type: 'invite_declined',
+          payload: {
+            message: `${responderName} declined your team invite for ${hackTitle}.`,
+            inviteId: invite.id,
+            hackathonId: invite.hackathonId,
+            hackathonTitle: hackTitle,
+            toUserId: userId,
+            toUsername: responderName,
+          },
+        },
       });
 
       // Automatically generate 1 replacement candidate suggestion
@@ -497,6 +583,46 @@ Produce the JSON response now.
         replacementCandidate,
       };
     }
+  }
+
+  /**
+   * Returns incoming pending invite for a user in a specific hackathon, including charter and team details.
+   */
+  async getMyPendingInvite(hackathonId: string, userId: string) {
+    const invite = await this.prisma.teamInvite.findFirst({
+      where: {
+        hackathonId,
+        toUserId: userId,
+        status: 'pending',
+      },
+      include: {
+        fromUser: {
+          select: {
+            id: true,
+            username: true,
+            name: true,
+            avatarUrl: true,
+            roleTags: true,
+            primaryStack: true,
+            commitmentScore: true,
+          },
+        },
+        team: {
+          include: {
+            members: {
+              include: {
+                user: {
+                  select: { id: true, username: true, name: true, avatarUrl: true },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return invite || null;
   }
 
   /**

@@ -88,4 +88,14 @@ export class MatchingController {
     const user = req.user as User;
     return this.matchingService.getUserInvites(user.id);
   }
+
+  /**
+   * GET /hackathons/:id/my-invite
+   * Returns current user's incoming pending invite for a specific hackathon.
+   */
+  @Get('hackathons/:id/my-invite')
+  async getMyPendingInvite(@Req() req: Request, @Param('id') hackathonId: string) {
+    const user = req.user as User;
+    return this.matchingService.getMyPendingInvite(hackathonId, user.id);
+  }
 }
